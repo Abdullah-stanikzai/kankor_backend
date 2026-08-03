@@ -1,0 +1,95 @@
+# ============================================================
+# Kankor Exam Platform - Production Docker Compose
+# ============================================================
+# Ports are offset to avoid conflicts with existing VPS services:
+#   Backend API:    8081 (host) -> 8080 (container)
+#   PostgreSQL:     5433 (host) -> 5432 (container)
+#   PDF Extractor:  5001 (host) -> 5000 (container)
+#
+# Override via .env: KANKOR_API_PORT, KANKOR_DB_PORT, KANKOR_PDF_PORT
+
+services:
+  # ── PostgreSQL Database ──────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: kankor-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-kankor_db}
+      POSTGRES_USER: ${DB_USER:-kankor_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "${KANKOR_DB_PORT:-5433}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db_schema.sql:/docker-entrypoint-initdb.d/01_schema.sql
+    networks:
+      - kankor-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kankor_user} -d ${DB_NAME:-kankor_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ── PDF Extractor Microservice ───────────────────────────
+  pdf-extractor:
+    build:
+      context: .
+      dockerfile: pdf-extractor/Dockerfile
+    container_name: kankor-pdf-extractor
+    restart: unless-stopped
+    environment:
+      PDF_EXTRACTOR_PORT: "5000"
+    ports:
+      - "${KANKOR_PDF_PORT:-5001}:5000"
+    networks:
+      - kankor-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Go Backend API ───────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: kankor-backend
+    restart: unless-stopped
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-kankor_user}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_NAME: ${DB_NAME:-kankor_db}
+      JWT_SECRET: ${JWT_SECRET}
+      APP_ENV: ${APP_ENV:-production}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      PDF_EXTRACTOR_URL: http://pdf-extractor:5000
+      PORT: "8080"
+    ports:
+      - "${KANKOR_API_PORT:-8081}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      pdf-extractor:
+        condition: service_started
+    networks:
+      - kankor-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+volumes:
+  postgres_data:
+    driver: local
+
+networks:
+  kankor-network:
+    driver: bridge
