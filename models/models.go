@@ -11,8 +11,10 @@ type User struct {
 	PasswordHash string    `json:"-" db:"password_hash"` // Don't expose password hash in JSON
 	FullName     string    `json:"full_name" db:"full_name"`
 	PhoneNumber  string    `json:"phone_number" db:"phone_number"`
+	Avatar       *string   `json:"avatar,omitempty" db:"avatar"`
 	Role         string    `json:"role" db:"role"`           // 'super_admin', 'center_admin', 'student'
-	CenterID     *string   `json:"center_id" db:"center_id"` // ID of assigned center (for center admins)
+	CenterID     *string   `json:"center_id" db:"center_id"` // ID of assigned center (for center admins & activated students)
+	Status       string    `json:"status" db:"status"`       // 'pending', 'active', 'inactive' (for students)
 	IsActive     bool      `json:"is_active" db:"is_active"`
 	CreatedAt    time.Time `json:"created_at" db:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at" db:"updated_at"`
@@ -38,6 +40,52 @@ type LoginResponse struct {
 	User      User   `json:"user"`
 	Token     string `json:"token"`
 	ExpiresAt int64  `json:"expires_at"`
+}
+
+// StudentRegisterRequest represents the student registration request
+type StudentRegisterRequest struct {
+	FullName string `json:"full_name" validate:"required"`
+	Email    string `json:"email" validate:"required,email"`
+	Phone    string `json:"phone" validate:"required"`
+	Password string `json:"password" validate:"required,min=8"`
+}
+
+// StudentLoginRequest represents the student login request
+type StudentLoginRequest struct {
+	Email    string `json:"email" validate:"required,email"`
+	Password string `json:"password" validate:"required"`
+}
+
+// UpdateStudentProfileRequest represents the request to update a student's profile
+type UpdateStudentProfileRequest struct {
+	FullName *string `json:"full_name,omitempty"`
+	Phone    *string `json:"phone,omitempty"`
+	Avatar   *string `json:"avatar,omitempty"`
+}
+
+// StudentProfileResponse represents the student profile returned to the client
+type StudentProfileResponse struct {
+	ID        string  `json:"id"`
+	FullName  string  `json:"full_name"`
+	Email     string  `json:"email"`
+	Phone     string  `json:"phone"`
+	Avatar    *string `json:"avatar,omitempty"`
+	Status    string  `json:"status"`
+	IsActive  bool    `json:"is_active"`
+	CreatedAt string  `json:"created_at"`
+}
+
+// StudentSearchResult represents the admin's view of a student during activation search
+type StudentSearchResult struct {
+	ID          string  `json:"id"`
+	FullName    string  `json:"full_name"`
+	Email       string  `json:"email"`
+	Phone       string  `json:"phone"`
+	CenterID    *string `json:"center_id"`
+	Status      string  `json:"status"`
+	IsActive    bool    `json:"is_active"`
+	CreatedAt   string  `json:"created_at"`
+	BelongsToUs bool    `json:"belongs_to_us"` // true if center_id matches admin's center
 }
 
 // EducationalCenter represents an educational center
@@ -73,7 +121,8 @@ type StudentCenterEnrollment struct {
 type Exam struct {
 	ID              string    `json:"id" db:"id"`
 	Title           string    `json:"title" db:"title"`
-	Description     string    `json:"description" db:"description"`
+	Description     string    `json:"description" db:"description"` // Subject (e.g., ریاضی, فزیک)
+	Class           string    `json:"class" db:"class"`             // Grade/class (10, 11, 12)
 	CenterID        string    `json:"center_id" db:"center_id"`
 	CreatorID       string    `json:"creator_id" db:"creator_id"` // Center admin who created
 	StartTime       time.Time `json:"start_time" db:"start_time"`
@@ -88,8 +137,9 @@ type Exam struct {
 
 // CreateExamRequest represents the request to create an exam
 type CreateExamRequest struct {
-	Title           string `json:"title" validate:"required"`
-	Description     string `json:"description"` // This is the subject
+	Title           string `json:"title"`                                    // Optional exam title
+	Description     string `json:"description" validate:"required"`          // Subject (required, e.g., ریاضی, فزیک)
+	Class           string `json:"class" validate:"required,oneof=10 11 12"` // Grade/class (required)
 	CenterID        string `json:"center_id" validate:"required"`
 	Date            string `json:"date" validate:"required"`       // "2026-04-10"
 	StartTime       string `json:"start_time" validate:"required"` // "10:00"

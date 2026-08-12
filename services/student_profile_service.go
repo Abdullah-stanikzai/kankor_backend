@@ -1,69 +1,85 @@
 package services
 
 import (
-	"errors"
-	"time"
+	"context"
+	"fmt"
+	"strings"
 
 	"kankor-backend/config"
 	"kankor-backend/models"
 )
 
-// StudentProfileService handles student profile-related business logic
+// StudentProfileService handles student profile-related business logic.
 type StudentProfileService struct {
 	config *config.Config
 }
 
-// NewStudentProfileService creates a new StudentProfileService instance
+// NewStudentProfileService creates a new StudentProfileService instance.
 func NewStudentProfileService(cfg *config.Config) *StudentProfileService {
-	return &StudentProfileService{
-		config: cfg,
-	}
+	return &StudentProfileService{config: cfg}
 }
 
-// GetProfile gets the student's profile
+// GetProfile returns a student's profile from the database.
 func (sps *StudentProfileService) GetProfile(userID string) (*models.User, error) {
-	// In a real implementation, we would query the database
-	// For now, we'll return a mock response
+	var user models.User
+	var avatar *string
+	query := `SELECT id, email, full_name, phone_number, avatar, role,
+		center_id, status, is_active, created_at, updated_at
+		FROM users WHERE id = $1 AND role = 'student'`
 
-	// Check if user exists (in a real implementation, this would be a DB query)
-	if userID == "" {
-		return nil, errors.New("user not found")
+	err := config.DBConnection.QueryRow(context.Background(), query, userID).Scan(
+		&user.ID, &user.Email, &user.FullName, &user.PhoneNumber, &avatar,
+		&user.Role, &user.CenterID, &user.Status, &user.IsActive, &user.CreatedAt, &user.UpdatedAt,
+	)
+	user.Avatar = avatar
+
+	if err != nil {
+		return nil, fmt.Errorf("student not found")
 	}
-
-	profile := &models.User{
-		ID:          userID,
-		PhoneNumber: "93700111111",
-		FullName:    "Ahmad Rahimi",
-		Email:       "ahmad@example.com",
-		Role:        "student",
-		IsActive:    true,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
-	}
-
-	return profile, nil
+	return &user, nil
 }
 
-// UpdateProfile updates the student's profile
+// UpdateProfile updates the student's full_name and/or email.
 func (sps *StudentProfileService) UpdateProfile(userID, fullName, email string) (*models.User, error) {
-	// In a real implementation, we would update in the database
-	// For now, we'll return a mock response
+	setClauses := []string{}
+	args := []interface{}{}
+	argIdx := 1
 
-	// Check if user exists (in a real implementation, this would be a DB query)
-	if userID == "" {
-		return nil, errors.New("user not found")
+	if strings.TrimSpace(fullName) != "" {
+		setClauses = append(setClauses, fmt.Sprintf("full_name = $%d", argIdx))
+		args = append(args, strings.TrimSpace(fullName))
+		argIdx++
 	}
 
-	profile := &models.User{
-		ID:          userID,
-		PhoneNumber: "93700111111", // This wouldn't change
-		FullName:    fullName,
-		Email:       email,
-		Role:        "student",
-		IsActive:    true,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+	if strings.TrimSpace(email) != "" {
+		setClauses = append(setClauses, fmt.Sprintf("email = $%d", argIdx))
+		args = append(args, strings.TrimSpace(email))
+		argIdx++
 	}
 
-	return profile, nil
+	if len(setClauses) == 0 {
+		return sps.GetProfile(userID)
+	}
+
+	args = append(args, userID)
+
+	query := fmt.Sprintf(
+		`UPDATE users SET %s WHERE id = $%d AND role = 'student'
+		RETURNING id, email, full_name, phone_number, avatar, role, center_id, status, is_active, created_at, updated_at`,
+		strings.Join(setClauses, ", "), argIdx,
+	)
+
+	var user models.User
+	var avatar *string
+	err := config.DBConnection.QueryRow(context.Background(), query, args...).Scan(
+		&user.ID, &user.Email, &user.FullName, &user.PhoneNumber, &avatar,
+		&user.Role, &user.CenterID, &user.Status, &user.IsActive, &user.CreatedAt, &user.UpdatedAt,
+	)
+	user.Avatar = avatar
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to update profile")
+	}
+
+	return &user, nil
 }

@@ -14,13 +14,26 @@ func SetupRoutes(app *fiber.App, cfg *config.Config) {
 	// Public routes
 	public := app.Group("/api/v1")
 
-	// Authentication routes
+	// Authentication routes (admin/center-admin)
 	authController := controllers.NewAuthController(cfg)
 	auth := public.Group("/auth")
 	auth.Post("/login", authController.Login)
 	auth.Post("/register", authController.Register)
 	auth.Post("/refresh-token", authController.RefreshToken)
 	auth.Post("/logout", authController.Logout)
+
+	// Student authentication routes (separate from admin auth)
+	studentAuthController := controllers.NewStudentAuthController(cfg)
+	studentAuth := public.Group("/auth/student")
+	studentAuth.Post("/register", studentAuthController.Register)
+	studentAuth.Post("/login", studentAuthController.Login)
+
+	// Protected student auth routes (require JWT)
+	studentAuthProtected := public.Group("/auth/student")
+	studentAuthProtected.Use(middleware.AuthMiddleware(cfg))
+	studentAuthProtected.Use(middleware.RoleMiddleware("student"))
+	studentAuthProtected.Get("/me", studentAuthController.GetMe)
+	studentAuthProtected.Put("/profile", studentAuthController.UpdateProfile)
 
 	// Protected routes for Super Admin
 	superAdmin := public.Group("/super-admin")
@@ -86,6 +99,14 @@ func SetupRoutes(app *fiber.App, cfg *config.Config) {
 	centerAdmin.Post("/students", studentController.CreateStudent)
 	centerAdmin.Get("/students", studentController.GetAllStudents)
 	centerAdmin.Post("/students/enroll", studentController.EnrollStudent)
+
+	// Student Activation (MUST be registered BEFORE /students/:id to avoid route shadowing)
+	studentActivationController := controllers.NewStudentActivationController(cfg)
+	centerAdmin.Get("/students/search", studentActivationController.Search)
+	centerAdmin.Patch("/students/:id/activate", studentActivationController.Activate)
+	centerAdmin.Patch("/students/:id/deactivate", studentActivationController.Deactivate)
+
+	// Wildcard :id routes (registered LAST so they don't capture "search", "activate", etc.)
 	centerAdmin.Get("/students/:id", studentController.GetStudentByID)
 	centerAdmin.Put("/students/:id", studentController.UpdateStudent)
 	centerAdmin.Delete("/students/:id", studentController.DeleteStudent)

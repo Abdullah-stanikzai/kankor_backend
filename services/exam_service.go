@@ -25,7 +25,7 @@ func NewExamService(cfg *config.Config) *ExamService {
 // GetAllExams gets all exams for a center admin
 func (es *ExamService) GetAllExams(userID, centerID string) ([]*models.Exam, error) {
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT id, title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at FROM exams WHERE center_id = $1 ORDER BY created_at DESC`,
+		`SELECT id, title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at FROM exams WHERE center_id = $1 ORDER BY created_at DESC`,
 		centerID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query exams: %w", err)
@@ -36,7 +36,7 @@ func (es *ExamService) GetAllExams(userID, centerID string) ([]*models.Exam, err
 	for rows.Next() {
 		var exam models.Exam
 		err := rows.Scan(
-			&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+			&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 			&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 			&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 			&exam.CreatedAt, &exam.UpdatedAt,
@@ -53,10 +53,10 @@ func (es *ExamService) GetAllExams(userID, centerID string) ([]*models.Exam, err
 // GetExamByID gets an exam by ID
 func (es *ExamService) GetExamByID(examID, userID, centerID string) (*models.Exam, error) {
 	var exam models.Exam
-	query := `SELECT id, title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at FROM exams WHERE id = $1 AND center_id = $2`
+	query := `SELECT id, title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at FROM exams WHERE id = $1 AND center_id = $2`
 
 	err := config.DBConnection.QueryRow(context.Background(), query, examID, centerID).Scan(
-		&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+		&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 		&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 		&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 		&exam.CreatedAt, &exam.UpdatedAt,
@@ -105,23 +105,23 @@ func (es *ExamService) CreateExam(req *models.CreateExamRequest, userID string) 
 	}
 
 	// Log the request data for debugging
-	fmt.Printf("[CreateExam] Creating exam with: Title=%s, CenterID=%s, UserID=%s, Date=%s, StartTime=%s, Duration=%d, Status=%s\n",
-		req.Title, req.CenterID, userID, req.Date, req.StartTime, req.DurationMinutes, status)
+	fmt.Printf("[CreateExam] Creating exam with: Title=%s, Subject=%s, Class=%s, CenterID=%s, UserID=%s, Date=%s, StartTime=%s, Duration=%d, Status=%s\n",
+		req.Title, req.Description, req.Class, req.CenterID, userID, req.Date, req.StartTime, req.DurationMinutes, status)
 	fmt.Printf("[CreateExam] startDateTime: %v\n", startDateTime)
 	fmt.Printf("[CreateExam] startDateTime.UTC(): %v\n", startDateTime.UTC())
 
 	var newExam models.Exam
-	query := `INSERT INTO exams (title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at) 
-	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW()) 
-	RETURNING id, title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at`
+	query := `INSERT INTO exams (title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at) 
+	VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW()) 
+	RETURNING id, title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at`
 
 	err = config.DBConnection.QueryRow(context.Background(), query,
-		req.Title, req.Description, req.CenterID, userID,
+		req.Title, req.Description, req.Class, req.CenterID, userID,
 		startDateTime, endDateTime, req.DurationMinutes,
 		status == "published", true, // is_published based on status, is_active = true
 		status,
 	).Scan(
-		&newExam.ID, &newExam.Title, &newExam.Description, &newExam.CenterID,
+		&newExam.ID, &newExam.Title, &newExam.Description, &newExam.Class, &newExam.CenterID,
 		&newExam.CreatorID, &newExam.StartTime, &newExam.EndTime,
 		&newExam.DurationMinutes, &newExam.IsPublished, &newExam.IsActive,
 		&newExam.Status, &newExam.CreatedAt, &newExam.UpdatedAt,
@@ -184,19 +184,19 @@ func (es *ExamService) UpdateExam(examID string, req *models.CreateExamRequest, 
 
 	// Log for debugging
 	fmt.Printf("Updating exam %s for center %s\n", examID, currentCenterID)
-	fmt.Printf("Update request: Title=%s, Date=%s, StartTime=%s, Duration=%d, Status=%s\n",
-		req.Title, req.Date, req.StartTime, req.DurationMinutes, status)
+	fmt.Printf("Update request: Title=%s, Subject=%s, Class=%s, Date=%s, StartTime=%s, Duration=%d, Status=%s\n",
+		req.Title, req.Description, req.Class, req.Date, req.StartTime, req.DurationMinutes, status)
 
 	query := `UPDATE exams 
-	SET title = $1, description = $2, start_time = $3, end_time = $4, duration_minutes = $5, is_published = $6, status = $7, updated_at = NOW() 
-	WHERE id = $8 AND center_id = $9 
-	RETURNING id, title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at`
+	SET title = $1, description = $2, class = $3, start_time = $4, end_time = $5, duration_minutes = $6, is_published = $7, status = $8, updated_at = NOW() 
+	WHERE id = $9 AND center_id = $10 
+	RETURNING id, title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, status, created_at, updated_at`
 
 	err = config.DBConnection.QueryRow(context.Background(), query,
-		req.Title, req.Description, startDateTime, endDateTime,
+		req.Title, req.Description, req.Class, startDateTime, endDateTime,
 		req.DurationMinutes, status == "published", status, examID, currentCenterID,
 	).Scan(
-		&updatedExam.ID, &updatedExam.Title, &updatedExam.Description, &updatedExam.CenterID,
+		&updatedExam.ID, &updatedExam.Title, &updatedExam.Description, &updatedExam.Class, &updatedExam.CenterID,
 		&updatedExam.CreatorID, &updatedExam.StartTime, &updatedExam.EndTime,
 		&updatedExam.DurationMinutes, &updatedExam.IsPublished, &updatedExam.IsActive,
 		&updatedExam.Status, &updatedExam.CreatedAt, &updatedExam.UpdatedAt,
@@ -264,10 +264,10 @@ func (es *ExamService) UnpublishExam(examID, centerID string) (*models.Exam, err
 // Helper function to update exam publish status
 func (es *ExamService) updateExamPublishStatus(examID, centerID string, isPublished bool) (*models.Exam, error) {
 	var exam models.Exam
-	query := `UPDATE exams SET is_published = $1, updated_at = NOW() WHERE id = $2 AND center_id = $3 RETURNING id, title, description, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at`
+	query := `UPDATE exams SET is_published = $1, updated_at = NOW() WHERE id = $2 AND center_id = $3 RETURNING id, title, description, class, center_id, creator_id, start_time, end_time, duration_minutes, is_published, is_active, created_at, updated_at`
 
 	err := config.DBConnection.QueryRow(context.Background(), query, isPublished, examID, centerID).Scan(
-		&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+		&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 		&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 		&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 		&exam.CreatedAt, &exam.UpdatedAt,
@@ -339,7 +339,7 @@ func (es *ExamService) GetUpcomingExams(studentID, centerID string) ([]*models.E
 	fmt.Printf("[GetUpcomingExams] Querying for studentID=%s, centerID=%s\n", studentID, centerID)
 
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT e.id, e.title, e.description, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.created_at, e.updated_at 
+		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.created_at, e.updated_at 
 		FROM exams e 
 		LEFT JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
 		WHERE (sce.student_id = $1 AND sce.is_active = true) OR e.center_id = $2
@@ -354,7 +354,7 @@ func (es *ExamService) GetUpcomingExams(studentID, centerID string) ([]*models.E
 	for rows.Next() {
 		var exam models.Exam
 		err := rows.Scan(
-			&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+			&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 			&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 			&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 			&exam.CreatedAt, &exam.UpdatedAt,
@@ -375,14 +375,14 @@ func (es *ExamService) GetAvailableExams(studentID, centerID string) ([]*models.
 	fmt.Printf("[GetAvailableExams] Querying for studentID=%s, centerID=%s\n", studentID, centerID)
 
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT e.id, e.title, e.description, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
+		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
 		FROM exams e 
 		JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
 		WHERE sce.student_id = $1 
 		  AND sce.is_active = true
 		  AND e.status = 'published'
 		  AND e.is_active = true
-		  AND e.start_time >= NOW()
+		  AND e.end_time >= NOW()
 		ORDER BY e.start_time ASC`,
 		studentID)
 	if err != nil {
@@ -394,7 +394,7 @@ func (es *ExamService) GetAvailableExams(studentID, centerID string) ([]*models.
 	for rows.Next() {
 		var exam models.Exam
 		err := rows.Scan(
-			&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+			&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 			&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 			&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 			&exam.Status, &exam.CreatedAt, &exam.UpdatedAt,
@@ -459,13 +459,13 @@ func (es *ExamService) HasStudentSubmittedExam(examID, studentID string) (bool, 
 // GetExamDetails gets exam details for a student
 func (es *ExamService) GetExamDetails(examID, studentID, centerID string) (map[string]interface{}, error) {
 	var exam models.Exam
-	query := `SELECT e.id, e.title, e.description, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
+	query := `SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
 	FROM exams e 
 	JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
 	WHERE e.id = $1 AND sce.student_id = $2 AND sce.is_active = true AND e.status = 'published' AND e.is_active = true`
 
 	err := config.DBConnection.QueryRow(context.Background(), query, examID, studentID).Scan(
-		&exam.ID, &exam.Title, &exam.Description, &exam.CenterID,
+		&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
 		&exam.CreatorID, &exam.StartTime, &exam.EndTime,
 		&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
 		&exam.Status, &exam.CreatedAt, &exam.UpdatedAt,
@@ -495,6 +495,8 @@ func (es *ExamService) GetExamDetails(examID, studentID, centerID string) (map[s
 		"id":               exam.ID,
 		"title":            exam.Title,
 		"description":      exam.Description,
+		"subject":          exam.Description, // Subject alias for clarity
+		"class":            exam.Class,
 		"center_id":        exam.CenterID,
 		"creator_id":       exam.CreatorID,
 		"start_time":       exam.StartTime,
