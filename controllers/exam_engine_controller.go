@@ -85,6 +85,16 @@ func (ctrl *ExamEngineController) GetQuestionsForExam(c *fiber.Ctx) error {
 			})
 		}
 
+		if errMsg == "exam has ended" {
+			fmt.Printf("[ExamEngine] Exam %s has ended, blocking questions for student %s\n", examID, claims.UserID)
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"success": false,
+				"error": fiber.Map{
+					"message": "This exam has ended",
+				},
+			})
+		}
+
 		// For any other error, return 500 with details
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"success": false,
@@ -143,7 +153,7 @@ func (ctrl *ExamEngineController) SaveAnswer(c *fiber.Ctx) error {
 	fmt.Printf("[ExamEngine] Saving answer - Student: %s, Exam: %s, Question: %s, Option: %s\n",
 		claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption)
 
-	answer, err := ctrl.engineService.SaveAnswer(claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption)
+	answer, err := ctrl.engineService.SaveAnswer(claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption, claims.CenterID)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error saving answer: %v\n", err)
 		return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("Failed to save answer: %v", err))
@@ -185,7 +195,7 @@ func (ctrl *ExamEngineController) SubmitExam(c *fiber.Ctx) error {
 	fmt.Printf("[ExamEngine] Submitting exam - Student: %s, Exam: %s, Time Spent: %ds\n",
 		claims.UserID, examID, req.TimeSpent)
 
-	result, err := ctrl.engineService.SubmitExam(claims.UserID, examID, req.TimeSpent)
+	result, err := ctrl.engineService.SubmitExam(claims.UserID, examID, claims.CenterID, req.TimeSpent)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error submitting exam: %v\n", err)
 

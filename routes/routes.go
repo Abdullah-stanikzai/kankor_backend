@@ -143,6 +143,8 @@ func SetupRoutes(app *fiber.App, cfg *config.Config) {
 	student.Get("/exams/upcoming", examController.GetUpcomingExams)
 	student.Get("/exams/available", examController.GetAvailableExams)
 	student.Get("/exams/history", examController.GetExamHistory)
+	// Consolidated sync endpoint (MUST be registered before /exams/:id to avoid route shadowing)
+	student.Get("/exams/sync", examController.GetSyncData)
 	student.Get("/exams/:id", examController.GetExamDetails)
 	student.Get("/exams/:id/submission-status", examController.CheckExamSubmissionStatus)
 	student.Post("/exams/:id/start", examController.StartExam)

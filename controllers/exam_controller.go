@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"kankor-backend/config"
@@ -201,6 +202,22 @@ func (ec *ExamController) GetAvailableExams(c *fiber.Ctx) error {
 	return c.Status(http.StatusOK).JSON(config.SuccessResponse(exams, "Available exams retrieved successfully"))
 }
 
+// GetSyncData returns a consolidated payload for the student app:
+// server time, upcoming/available exams and submitted exam ids.
+// GET /api/v1/student/exams/sync
+func (ec *ExamController) GetSyncData(c *fiber.Ctx) error {
+	userID := c.Locals("user_id").(string)
+	centerID := c.Locals("user_center_id").(string)
+
+	data, err := ec.examService.GetSyncData(userID, centerID)
+	if err != nil {
+		fmt.Printf("[GetSyncData] Service error: %v\n", err)
+		return c.Status(http.StatusInternalServerError).JSON(config.ErrorResponse("Failed to sync data", http.StatusInternalServerError))
+	}
+
+	return c.Status(http.StatusOK).JSON(config.SuccessResponse(data, "Sync data retrieved successfully"))
+}
+
 // GetExamHistory gets a student's exam history
 func (ec *ExamController) GetExamHistory(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
@@ -251,10 +268,28 @@ func (ec *ExamController) StartExam(c *fiber.Ctx) error {
 
 	attempt, err := ec.examService.StartExam(examID, userID)
 	if err != nil {
-		return c.Status(http.StatusInternalServerError).JSON(config.ErrorResponse(err.Error(), http.StatusInternalServerError))
+		status, message := mapStartExamError(err)
+		return c.Status(status).JSON(config.ErrorResponse(message, status))
 	}
 
 	return c.Status(http.StatusCreated).JSON(config.SuccessResponse(attempt, "Exam started successfully"))
+}
+
+// mapStartExamError translates StartExam service errors into proper HTTP
+// statuses so the app can distinguish "not started yet" / "has ended" from
+// internal failures.
+func mapStartExamError(err error) (int, string) {
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "has not started"):
+		return http.StatusBadRequest, message
+	case strings.Contains(message, "has ended"):
+		return http.StatusConflict, message
+	case strings.Contains(message, "not found") || strings.Contains(message, "not available"):
+		return http.StatusNotFound, message
+	default:
+		return http.StatusInternalServerError, message
+	}
 }
 
 // GetExamQuestions gets questions for an exam

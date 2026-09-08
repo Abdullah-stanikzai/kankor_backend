@@ -37,6 +37,15 @@ func (s *ExamEngineService) GetQuestionsForExam(examID, studentID, centerID stri
 		return nil, fmt.Errorf("student does not have access to this exam")
 	}
 
+	// Block access once the exam has passed its finishing time (server time).
+	var endTime time.Time
+	err = config.DBConnection.QueryRow(context.Background(),
+		`SELECT end_time FROM exams WHERE id = $1`, examID).Scan(&endTime)
+	if err == nil && time.Now().After(endTime) {
+		fmt.Printf("[DB] Exam %s has ended (end=%v), blocking questions\n", examID, endTime)
+		return nil, fmt.Errorf("exam has ended")
+	}
+
 	fmt.Printf("[DB] Fetching questions for exam %s\n", examID)
 
 	// Fetch questions for the exam (including score)
@@ -163,10 +172,21 @@ func (s *ExamEngineService) GetAllStudentResults(studentID, centerID string) ([]
 }
 
 // SaveAnswer saves or updates a student's answer (upsert operation)
-func (s *ExamEngineService) SaveAnswer(studentID, examID, questionID, selectedOption string) (*models.StudentAnswerSimple, error) {
+func (s *ExamEngineService) SaveAnswer(studentID, examID, questionID, selectedOption, centerID string) (*models.StudentAnswerSimple, error) {
+	// Verify the exam belongs to the student's center.
+	var examCenterID string
+	err := config.DBConnection.QueryRow(context.Background(),
+		`SELECT center_id FROM exams WHERE id = $1`, examID).Scan(&examCenterID)
+	if err != nil {
+		return nil, fmt.Errorf("exam not found or inaccessible: %w", err)
+	}
+	if examCenterID != centerID {
+		return nil, fmt.Errorf("student does not have access to this exam")
+	}
+
 	// Check if answer already exists
 	var existingAnswer models.StudentAnswerSimple
-	err := config.DBConnection.QueryRow(context.Background(),
+	err = config.DBConnection.QueryRow(context.Background(),
 		`SELECT id, student_id, exam_id, question_id, selected_option, is_correct, created_at, updated_at 
 		 FROM answers 
 		 WHERE student_id = $1 AND question_id = $2`,
@@ -254,7 +274,19 @@ func (s *ExamEngineService) updateAnswer(answerID, selectedOption string) (*mode
 }
 
 // SubmitExam submits the exam and calculates the result
-func (s *ExamEngineService) SubmitExam(studentID, examID string, timeSpentSeconds int) (*models.ExamResultResponse, error) {
+func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeSpentSeconds int) (*models.ExamResultResponse, error) {
+	// Verify the exam belongs to the student's center before accepting a submission.
+	var examCenterID string
+	err := config.DBConnection.QueryRow(context.Background(),
+		`SELECT center_id FROM exams WHERE id = $1`, examID).Scan(&examCenterID)
+	if err != nil {
+		return nil, fmt.Errorf("exam not found: %w", err)
+	}
+	if examCenterID != centerID {
+		fmt.Printf("[ExamEngine] SubmitExam blocked: exam center=%s != student center=%s\n", examCenterID, centerID)
+		return nil, fmt.Errorf("student does not have access to this exam")
+	}
+
 	// Start a transaction
 	tx, err := config.DBConnection.Begin(context.Background())
 	if err != nil {

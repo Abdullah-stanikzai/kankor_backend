@@ -333,18 +333,17 @@ func (es *ExamService) GetExamResult(examID, attemptID, centerID string) (*model
 
 // GetUpcomingExams gets upcoming exams for a student's center
 func (es *ExamService) GetUpcomingExams(studentID, centerID string) ([]*models.Exam, error) {
-	// TEMPORARY FIX: Remove strict filtering to allow debugging
-	// Return all exams for the student's center, even if not published/active or has 0 questions
-	// Also handle case where student_center_enrollment might not exist
+	// Only return published, active exams for centers where the student has
+	// an ACTIVE enrollment, and whose end time has not passed (server time).
 	fmt.Printf("[GetUpcomingExams] Querying for studentID=%s, centerID=%s\n", studentID, centerID)
 
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.created_at, e.updated_at 
 		FROM exams e 
-		LEFT JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
-		WHERE (sce.student_id = $1 AND sce.is_active = true) OR e.center_id = $2
+		JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		WHERE e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()
 		ORDER BY e.start_time ASC`,
-		studentID, centerID)
+		studentID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query upcoming exams: %w", err)
 	}
@@ -382,6 +381,7 @@ func (es *ExamService) GetAvailableExams(studentID, centerID string) ([]*models.
 		  AND sce.is_active = true
 		  AND e.status = 'published'
 		  AND e.is_active = true
+		  AND e.start_time <= NOW()
 		  AND e.end_time >= NOW()
 		ORDER BY e.start_time ASC`,
 		studentID)
@@ -407,6 +407,86 @@ func (es *ExamService) GetAvailableExams(studentID, centerID string) ([]*models.
 
 	fmt.Printf("[GetAvailableExams] Found %d exams for student %s\n", len(exams), studentID)
 	return exams, nil
+}
+
+// StudentSyncData aggregates everything a student needs on app start/refresh:
+// the current server time, upcoming (not yet started) exams, available
+// (ongoing) exams and the set of exams the student already submitted.
+type StudentSyncData struct {
+	ServerTime       time.Time      `json:"server_time"`
+	UpcomingExams    []*models.Exam `json:"upcoming"`
+	AvailableExams   []*models.Exam `json:"available"`
+	SubmittedExamIDs []string       `json:"submitted_exam_ids"`
+}
+
+// GetSyncData returns a single consolidated payload for the student app.
+// One request replaces the previous pattern of fetching upcoming + available
+// exams and then checking the submission status for every exam individually.
+func (es *ExamService) GetSyncData(studentID, centerID string) (*StudentSyncData, error) {
+	fmt.Printf("[GetSyncData] Querying for studentID=%s, centerID=%s\n", studentID, centerID)
+
+	rows, err := config.DBConnection.Query(context.Background(),
+		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
+		FROM exams e 
+		JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		WHERE e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()
+		ORDER BY e.start_time ASC`,
+		studentID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query sync exams: %w", err)
+	}
+	defer rows.Close()
+
+	now := time.Now()
+	upcoming := make([]*models.Exam, 0)
+	available := make([]*models.Exam, 0)
+	for rows.Next() {
+		var exam models.Exam
+		err := rows.Scan(
+			&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
+			&exam.CreatorID, &exam.StartTime, &exam.EndTime,
+			&exam.DurationMinutes, &exam.IsPublished, &exam.IsActive,
+			&exam.Status, &exam.CreatedAt, &exam.UpdatedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan sync exam: %w", err)
+		}
+		if now.After(exam.StartTime) {
+			available = append(available, &exam)
+		} else {
+			upcoming = append(upcoming, &exam)
+		}
+	}
+
+	// Exams the student already submitted (both legacy attempts and the exam engine results).
+	submittedIDs := make([]string, 0)
+	subRows, err := config.DBConnection.Query(context.Background(),
+		`SELECT exam_id FROM exam_attempts WHERE student_id = $1 AND is_submitted = true
+		 UNION
+		 SELECT exam_id FROM exam_results WHERE student_id = $1`,
+		studentID)
+	if err != nil {
+		// Non-fatal: the app can still work without this information.
+		fmt.Printf("[GetSyncData] Warning: failed to load submitted exam ids: %v\n", err)
+	} else {
+		defer subRows.Close()
+		for subRows.Next() {
+			var examID string
+			if err := subRows.Scan(&examID); err == nil {
+				submittedIDs = append(submittedIDs, examID)
+			}
+		}
+	}
+
+	fmt.Printf("[GetSyncData] Upcoming=%d, Available=%d, Submitted=%d\n",
+		len(upcoming), len(available), len(submittedIDs))
+
+	return &StudentSyncData{
+		ServerTime:       now.UTC(),
+		UpcomingExams:    upcoming,
+		AvailableExams:   available,
+		SubmittedExamIDs: submittedIDs,
+	}, nil
 }
 
 // GetExamHistory gets a student's exam history
@@ -462,7 +542,7 @@ func (es *ExamService) GetExamDetails(examID, studentID, centerID string) (map[s
 	query := `SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
 	FROM exams e 
 	JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
-	WHERE e.id = $1 AND sce.student_id = $2 AND sce.is_active = true AND e.status = 'published' AND e.is_active = true`
+	WHERE e.id = $1 AND sce.student_id = $2 AND sce.is_active = true AND e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()`
 
 	err := config.DBConnection.QueryRow(context.Background(), query, examID, studentID).Scan(
 		&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
@@ -508,17 +588,44 @@ func (es *ExamService) GetExamDetails(examID, studentID, centerID string) (map[s
 		"updated_at":       exam.UpdatedAt,
 		"total_questions":  totalQuestions,
 		"total_score":      totalScore,
+		"server_time":      time.Now().UTC(),
 	}, nil
 }
 
-// StartExam creates a new exam attempt for a student
+// StartExam creates a new exam attempt for a student after verifying that
+// the student is allowed to take the exam right now: active enrollment,
+// published exam, start time reached and end time not passed (server time).
 func (es *ExamService) StartExam(examID, studentID string) (*models.ExamAttempt, error) {
+	var startTime, endTime time.Time
+	err := config.DBConnection.QueryRow(context.Background(),
+		`SELECT e.start_time, e.end_time
+		 FROM exams e
+		 JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		 WHERE e.id = $2 AND e.status = 'published' AND e.is_active = true`,
+		studentID, examID).Scan(&startTime, &endTime)
+	if err != nil {
+		fmt.Printf("[StartExam] Exam %s not available for student %s: %v\n", examID, studentID, err)
+		return nil, fmt.Errorf("exam not found or not available")
+	}
+
+	now := time.Now()
+	if now.Before(startTime) {
+		fmt.Printf("[StartExam] Exam %s has not started yet (start=%v)\n", examID, startTime)
+		return nil, fmt.Errorf("exam has not started yet")
+	}
+	if now.After(endTime) {
+		fmt.Printf("[StartExam] Exam %s has ended (end=%v)\n", examID, endTime)
+		return nil, fmt.Errorf("exam has ended")
+	}
+
 	var attempt models.ExamAttempt
-	query := `INSERT INTO exam_attempts (exam_id, student_id, start_time, is_submitted, is_timed_out, created_at) 
-	VALUES ($1, $2, NOW(), false, false, NOW()) 
+	// total_questions/correct_answers are NOT NULL columns without defaults;
+	// they are filled in when the exam is submitted and graded.
+	query := `INSERT INTO exam_attempts (exam_id, student_id, start_time, is_submitted, is_timed_out, created_at, total_questions, correct_answers) 
+	VALUES ($1, $2, NOW(), false, false, NOW(), 0, 0) 
 	RETURNING id, exam_id, student_id, start_time, submit_time, time_taken_seconds, score, total_questions, correct_answers, is_submitted, is_timed_out, created_at`
 
-	err := config.DBConnection.QueryRow(context.Background(), query, examID, studentID).Scan(
+	err = config.DBConnection.QueryRow(context.Background(), query, examID, studentID).Scan(
 		&attempt.ID, &attempt.ExamID, &attempt.StudentID,
 		&attempt.StartTime, &attempt.SubmitTime, &attempt.TimeTakenSeconds,
 		&attempt.Score, &attempt.TotalQuestions, &attempt.CorrectAnswers,
