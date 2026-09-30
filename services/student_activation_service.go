@@ -88,9 +88,16 @@ func (s *StudentActivationService) SearchStudent(email, phone, adminCenterID str
 // ActivateStudent assigns a student to the admin's center and sets status to "active".
 // Security: only works if student's center_id IS NULL (never been activated).
 func (s *StudentActivationService) ActivateStudent(studentID, adminCenterID string) (*models.User, error) {
+	ctx := context.Background()
+	tx, err := config.DBConnection.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start activation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	// Verify student exists, is a student, and center_id IS NULL
 	var currentCenterID *string
-	err := config.DBConnection.QueryRow(context.Background(),
+	err = tx.QueryRow(ctx,
 		`SELECT center_id FROM users WHERE id = $1 AND role = 'student' AND is_active = true`,
 		studentID).Scan(&currentCenterID)
 	if err != nil {
@@ -98,10 +105,9 @@ func (s *StudentActivationService) ActivateStudent(studentID, adminCenterID stri
 	}
 
 	if currentCenterID != nil {
-		if *currentCenterID == adminCenterID {
-			return nil, fmt.Errorf("student is already assigned to your center")
+		if *currentCenterID != adminCenterID {
+			return nil, fmt.Errorf("student belongs to another center — cannot activate")
 		}
-		return nil, fmt.Errorf("student belongs to another center — cannot activate")
 	}
 
 	// Activate: assign to center and set status to active
@@ -112,7 +118,7 @@ func (s *StudentActivationService) ActivateStudent(studentID, adminCenterID stri
 		WHERE id = $2 AND role = 'student' AND is_active = true
 		RETURNING id, email, full_name, phone_number, avatar, role, center_id, status, is_active, created_at, updated_at`
 
-	err = config.DBConnection.QueryRow(context.Background(), query, adminCenterID, studentID).Scan(
+	err = tx.QueryRow(ctx, query, adminCenterID, studentID).Scan(
 		&user.ID, &user.Email, &user.FullName, &user.PhoneNumber, &avatar,
 		&user.Role, &user.CenterID, &user.Status, &user.IsActive, &user.CreatedAt, &user.UpdatedAt,
 	)
@@ -122,12 +128,37 @@ func (s *StudentActivationService) ActivateStudent(studentID, adminCenterID stri
 		return nil, fmt.Errorf("failed to activate student: %w", err)
 	}
 
+	// Exam access historically used this enrollment table, while activation
+	// only updated users.center_id. Keep both records in sync and repair older
+	// students that were activated before this upsert existed.
+	_, err = tx.Exec(ctx,
+		`INSERT INTO student_center_enrollment
+			(student_id, center_id, enrollment_date, is_active, created_at)
+		 VALUES ($1, $2, CURRENT_DATE, true, NOW())
+		 ON CONFLICT (student_id, center_id)
+		 DO UPDATE SET is_active = true, enrollment_date = CURRENT_DATE`,
+		studentID, adminCenterID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create student enrollment: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to complete activation: %w", err)
+	}
+
 	return &user, nil
 }
 
 // DeactivateStudent sets a student's status to "inactive" while keeping center_id.
 // Security: only works if student's center_id == adminCenterID.
 func (s *StudentActivationService) DeactivateStudent(studentID, adminCenterID string) (*models.User, error) {
+	ctx := context.Background()
+	tx, err := config.DBConnection.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to start deactivation: %w", err)
+	}
+	defer tx.Rollback(ctx)
+
 	var user models.User
 	var avatar *string
 	query := `UPDATE users
@@ -135,7 +166,7 @@ func (s *StudentActivationService) DeactivateStudent(studentID, adminCenterID st
 		WHERE id = $1 AND role = 'student' AND center_id = $2 AND is_active = true
 		RETURNING id, email, full_name, phone_number, avatar, role, center_id, status, is_active, created_at, updated_at`
 
-	err := config.DBConnection.QueryRow(context.Background(), query, studentID, adminCenterID).Scan(
+	err = tx.QueryRow(ctx, query, studentID, adminCenterID).Scan(
 		&user.ID, &user.Email, &user.FullName, &user.PhoneNumber, &avatar,
 		&user.Role, &user.CenterID, &user.Status, &user.IsActive, &user.CreatedAt, &user.UpdatedAt,
 	)
@@ -143,6 +174,19 @@ func (s *StudentActivationService) DeactivateStudent(studentID, adminCenterID st
 
 	if err != nil {
 		return nil, fmt.Errorf("student not found or does not belong to your center")
+	}
+
+	_, err = tx.Exec(ctx,
+		`UPDATE student_center_enrollment
+		 SET is_active = false
+		 WHERE student_id = $1 AND center_id = $2`,
+		studentID, adminCenterID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to deactivate student enrollment: %w", err)
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("failed to complete deactivation: %w", err)
 	}
 
 	return &user, nil

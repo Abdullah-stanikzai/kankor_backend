@@ -333,14 +333,16 @@ func (es *ExamService) GetExamResult(examID, attemptID, centerID string) (*model
 
 // GetUpcomingExams gets upcoming exams for a student's center
 func (es *ExamService) GetUpcomingExams(studentID, centerID string) ([]*models.Exam, error) {
-	// Only return published, active exams for centers where the student has
-	// an ACTIVE enrollment, and whose end time has not passed (server time).
+	// users.center_id is the authoritative assignment made by the activation
+	// flow. Using it also repairs visibility for students activated before the
+	// enrollment-table record was kept in sync.
 	fmt.Printf("[GetUpcomingExams] Querying for studentID=%s, centerID=%s\n", studentID, centerID)
 
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.created_at, e.updated_at 
-		FROM exams e 
-		JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		FROM exams e
+		JOIN users u ON u.id = $1 AND u.role = 'student' AND u.center_id = e.center_id
+			AND u.status = 'active' AND u.is_active = true
 		WHERE e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()
 		ORDER BY e.start_time ASC`,
 		studentID)
@@ -375,11 +377,10 @@ func (es *ExamService) GetAvailableExams(studentID, centerID string) ([]*models.
 
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
-		FROM exams e 
-		JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
-		WHERE sce.student_id = $1 
-		  AND sce.is_active = true
-		  AND e.status = 'published'
+		FROM exams e
+		JOIN users u ON u.id = $1 AND u.role = 'student' AND u.center_id = e.center_id
+			AND u.status = 'active' AND u.is_active = true
+		WHERE e.status = 'published'
 		  AND e.is_active = true
 		  AND e.start_time <= NOW()
 		  AND e.end_time >= NOW()
@@ -427,8 +428,9 @@ func (es *ExamService) GetSyncData(studentID, centerID string) (*StudentSyncData
 
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
-		FROM exams e 
-		JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		FROM exams e
+		JOIN users u ON u.id = $1 AND u.role = 'student' AND u.center_id = e.center_id
+			AND u.status = 'active' AND u.is_active = true
 		WHERE e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()
 		ORDER BY e.start_time ASC`,
 		studentID)
@@ -493,10 +495,11 @@ func (es *ExamService) GetSyncData(studentID, centerID string) (*StudentSyncData
 func (es *ExamService) GetExamHistory(studentID, centerID string) ([]*models.ExamAttempt, error) {
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT ea.id, ea.exam_id, ea.student_id, ea.start_time, ea.submit_time, ea.time_taken_seconds, ea.score, ea.total_questions, ea.correct_answers, ea.is_submitted, ea.is_timed_out, ea.created_at 
-		FROM exam_attempts ea 
-		JOIN exams e ON ea.exam_id = e.id 
-		JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
-		WHERE sce.student_id = $1 AND sce.is_active = true AND ea.is_submitted = true 
+		FROM exam_attempts ea
+		JOIN exams e ON ea.exam_id = e.id
+		JOIN users u ON u.id = $1 AND u.role = 'student' AND u.center_id = e.center_id
+			AND u.status = 'active' AND u.is_active = true
+		WHERE ea.student_id = $1 AND ea.is_submitted = true
 		ORDER BY ea.created_at DESC`,
 		studentID)
 	if err != nil {
@@ -540,9 +543,10 @@ func (es *ExamService) HasStudentSubmittedExam(examID, studentID string) (bool, 
 func (es *ExamService) GetExamDetails(examID, studentID, centerID string) (map[string]interface{}, error) {
 	var exam models.Exam
 	query := `SELECT e.id, e.title, e.description, e.class, e.center_id, e.creator_id, e.start_time, e.end_time, e.duration_minutes, e.is_published, e.is_active, e.status, e.created_at, e.updated_at 
-	FROM exams e 
-	JOIN student_center_enrollment sce ON e.center_id = sce.center_id 
-	WHERE e.id = $1 AND sce.student_id = $2 AND sce.is_active = true AND e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()`
+	FROM exams e
+	JOIN users u ON u.id = $2 AND u.role = 'student' AND u.center_id = e.center_id
+		AND u.status = 'active' AND u.is_active = true
+	WHERE e.id = $1 AND e.status = 'published' AND e.is_active = true AND e.end_time >= NOW()`
 
 	err := config.DBConnection.QueryRow(context.Background(), query, examID, studentID).Scan(
 		&exam.ID, &exam.Title, &exam.Description, &exam.Class, &exam.CenterID,
@@ -600,7 +604,8 @@ func (es *ExamService) StartExam(examID, studentID string) (*models.ExamAttempt,
 	err := config.DBConnection.QueryRow(context.Background(),
 		`SELECT e.start_time, e.end_time
 		 FROM exams e
-		 JOIN student_center_enrollment sce ON e.center_id = sce.center_id AND sce.student_id = $1 AND sce.is_active = true
+		 JOIN users u ON u.id = $1 AND u.role = 'student' AND u.center_id = e.center_id
+			AND u.status = 'active' AND u.is_active = true
 		 WHERE e.id = $2 AND e.status = 'published' AND e.is_active = true`,
 		studentID, examID).Scan(&startTime, &endTime)
 	if err != nil {
