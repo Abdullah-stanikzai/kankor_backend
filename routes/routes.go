@@ -100,6 +100,11 @@ func SetupRoutes(app *fiber.App, cfg *config.Config) {
 	centerAdmin.Get("/students", studentController.GetAllStudents)
 	centerAdmin.Post("/students/enroll", studentController.EnrollStudent)
 
+	// Student scores (registered before the wildcard student route).
+	scoreController := controllers.NewScoreController(cfg)
+	centerAdmin.Get("/scores", scoreController.GetCenterScores)
+	centerAdmin.Get("/students/:studentId/scores", scoreController.GetStudentScores)
+
 	// Student Activation (MUST be registered BEFORE /students/:id to avoid route shadowing)
 	studentActivationController := controllers.NewStudentActivationController(cfg)
 	centerAdmin.Get("/students/search", studentActivationController.Search)
