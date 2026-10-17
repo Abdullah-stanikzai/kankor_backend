@@ -48,9 +48,11 @@ func (s *ExamEngineService) GetQuestionsForExam(examID, studentID, centerID stri
 
 	fmt.Printf("[DB] Fetching questions for exam %s\n", examID)
 
-	// Fetch questions for the exam (including score)
+	// Fetch questions for the exam (including score). Questions created by the
+	// admin panel use question_text + question_options; COALESCE keeps older
+	// questions stored in the legacy flat columns readable as well.
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at 
+		`SELECT id, exam_id, COALESCE(NULLIF(question_text, ''), text), option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at
 		 FROM questions 
 		 WHERE exam_id = $1 
 		 ORDER BY created_at ASC`,
@@ -75,16 +77,43 @@ func (s *ExamEngineService) GetQuestionsForExam(examID, studentID, centerID stri
 		}
 		questionCount++
 
-		// Format options as map for frontend
-		questionWithOptions := &models.QuestionWithOptions{
-			ID:   q.ID,
-			Text: q.Text,
-			Options: map[string]string{
+		// Prefer normalized question_options. Fall back to the legacy flat
+		// option columns for questions created before the schema migration.
+		options := make(map[string]string, 4)
+		optionRows, optionErr := config.DBConnection.Query(context.Background(),
+			`SELECT option_letter, option_text
+			 FROM question_options
+			 WHERE question_id = $1
+			 ORDER BY option_order ASC`, q.ID)
+		if optionErr != nil {
+			return nil, fmt.Errorf("failed to query options for question %s: %w", q.ID, optionErr)
+		}
+		for optionRows.Next() {
+			var letter, text string
+			if scanErr := optionRows.Scan(&letter, &text); scanErr != nil {
+				optionRows.Close()
+				return nil, fmt.Errorf("failed to scan option for question %s: %w", q.ID, scanErr)
+			}
+			options[letter] = text
+		}
+		if optionErr = optionRows.Err(); optionErr != nil {
+			optionRows.Close()
+			return nil, fmt.Errorf("failed to read options for question %s: %w", q.ID, optionErr)
+		}
+		optionRows.Close()
+		if len(options) == 0 {
+			options = map[string]string{
 				"A": q.OptionA,
 				"B": q.OptionB,
 				"C": q.OptionC,
 				"D": q.OptionD,
-			},
+			}
+		}
+
+		questionWithOptions := &models.QuestionWithOptions{
+			ID:      q.ID,
+			Text:    q.Text,
+			Options: options,
 		}
 		questions = append(questions, questionWithOptions)
 	}
