@@ -7,6 +7,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"kankor-backend/config"
+	"kankor-backend/middleware"
 	"kankor-backend/models"
 	"kankor-backend/services"
 	"kankor-backend/utils"
@@ -68,9 +69,10 @@ func (sc *StudentAuthController) Register(c *fiber.Ctx) error {
 	}
 
 	response := models.LoginResponse{
-		User:      *user,
-		Token:     token,
-		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		User:         *user,
+		Token:        token,
+		RefreshToken: sc.createRefreshToken(user),
+		ExpiresAt:    time.Now().Add(24 * time.Hour).Unix(),
 	}
 
 	return c.Status(http.StatusCreated).JSON(
@@ -103,14 +105,59 @@ func (sc *StudentAuthController) Login(c *fiber.Ctx) error {
 	}
 
 	response := models.LoginResponse{
-		User:      *user,
-		Token:     token,
-		ExpiresAt: time.Now().Add(24 * time.Hour).Unix(),
+		User:         *user,
+		Token:        token,
+		RefreshToken: sc.createRefreshToken(user),
+		ExpiresAt:    time.Now().Add(24 * time.Hour).Unix(),
 	}
 
 	return c.Status(http.StatusOK).JSON(
 		config.SuccessResponse(response, "Login successful"),
 	)
+}
+
+// RefreshToken exchanges a valid long-lived refresh token for a new access
+// token without asking the student to enter credentials again.
+func (sc *StudentAuthController) RefreshToken(c *fiber.Ctx) error {
+	var req struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := c.BodyParser(&req); err != nil || req.RefreshToken == "" {
+		return c.Status(http.StatusBadRequest).JSON(config.ErrorResponse("refresh_token is required", http.StatusBadRequest))
+	}
+	claims, err := middleware.ValidateRefreshJWT(req.RefreshToken, sc.config.JWTSecret)
+	if err != nil || claims.Role != "student" {
+		return c.Status(http.StatusUnauthorized).JSON(config.ErrorResponse("Invalid or expired refresh token", http.StatusUnauthorized))
+	}
+	user, err := sc.studentAuthSvc.GetProfile(claims.UserID)
+	if err != nil || !user.IsActive {
+		return c.Status(http.StatusUnauthorized).JSON(config.ErrorResponse("Student account is no longer active", http.StatusUnauthorized))
+	}
+	centerID := ""
+	if user.CenterID != nil {
+		centerID = *user.CenterID
+	}
+	token, err := utils.GenerateJWT(user.ID, user.Role, centerID, sc.config.JWTSecret)
+	if err != nil {
+		return c.Status(http.StatusInternalServerError).JSON(config.ErrorResponse("Failed to refresh session", http.StatusInternalServerError))
+	}
+	return c.Status(http.StatusOK).JSON(config.SuccessResponse(fiber.Map{
+		"token":         token,
+		"refresh_token": sc.createRefreshToken(user),
+		"expires_at":    time.Now().Add(24 * time.Hour).Unix(),
+	}, "Token refreshed successfully"))
+}
+
+func (sc *StudentAuthController) createRefreshToken(user *models.User) string {
+	centerID := ""
+	if user.CenterID != nil {
+		centerID = *user.CenterID
+	}
+	token, err := middleware.GenerateRefreshJWT(user.ID, user.Role, centerID, sc.config.JWTSecret)
+	if err != nil {
+		return ""
+	}
+	return token
 }
 
 // GetMe returns the currently authenticated student's profile.

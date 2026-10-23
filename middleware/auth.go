@@ -78,9 +78,10 @@ func RoleMiddleware(requiredRoles ...string) fiber.Handler {
 
 // JWTClaims represents the claims in the JWT token
 type JWTClaims struct {
-	UserID   string `json:"user_id"`
-	Role     string `json:"role"`
-	CenterID string `json:"center_id,omitempty"`
+	UserID    string `json:"user_id"`
+	Role      string `json:"role"`
+	CenterID  string `json:"center_id,omitempty"`
+	TokenType string `json:"token_type,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -113,6 +114,27 @@ func ValidateJWT(tokenString string, secret string) (*JWTClaims, error) {
 		return nil, errors.New("invalid token")
 	}
 
+	return claims, nil
+}
+
+// GenerateRefreshJWT creates a long-lived, purpose-specific token used only
+// to obtain a new access token after the short-lived access token expires.
+func GenerateRefreshJWT(userID, role, centerID, secret string) (string, error) {
+	claims := &JWTClaims{
+		UserID: userID, Role: role, CenterID: centerID, TokenType: "refresh",
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(30 * 24 * time.Hour)),
+		},
+	}
+	return jwt.NewWithClaims(jwt.SigningMethodHS256, claims).SignedString([]byte(secret))
+}
+
+// ValidateRefreshJWT validates a refresh token and rejects access tokens.
+func ValidateRefreshJWT(tokenString, secret string) (*JWTClaims, error) {
+	claims, err := ValidateJWT(tokenString, secret)
+	if err != nil || claims.TokenType != "refresh" {
+		return nil, errors.New("invalid refresh token")
+	}
 	return claims, nil
 }
 

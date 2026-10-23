@@ -27,6 +27,7 @@ func SetupRoutes(app *fiber.App, cfg *config.Config) {
 	studentAuth := public.Group("/auth/student")
 	studentAuth.Post("/register", studentAuthController.Register)
 	studentAuth.Post("/login", studentAuthController.Login)
+	studentAuth.Post("/refresh-token", studentAuthController.RefreshToken)
 
 	// Protected student auth routes (require JWT)
 	studentAuthProtected := public.Group("/auth/student")

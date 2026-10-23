@@ -37,9 +37,10 @@ type LoginRequest struct {
 
 // LoginResponse represents the login response
 type LoginResponse struct {
-	User      User   `json:"user"`
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at"`
+	User         User   `json:"user"`
+	Token        string `json:"token"`
+	RefreshToken string `json:"refresh_token,omitempty"`
+	ExpiresAt    int64  `json:"expires_at"`
 }
 
 // StudentRegisterRequest represents the student registration request
