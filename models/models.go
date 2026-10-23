@@ -287,11 +287,12 @@ type QuestionWithOptions struct {
 
 // QuestionReview represents a single question's review data
 type QuestionReview struct {
-	QuestionID     string  `json:"question_id"`
-	Question       string  `json:"question"`
-	SelectedOption *string `json:"selected_option"`
-	CorrectOption  string  `json:"correct_option"`
-	IsCorrect      bool    `json:"is_correct"`
+	QuestionID     string            `json:"question_id"`
+	Question       string            `json:"question"`
+	Options        map[string]string `json:"options"`
+	SelectedOption *string           `json:"selected_option"`
+	CorrectOption  string            `json:"correct_option"`
+	IsCorrect      bool              `json:"is_correct"`
 }
 
 // ExamResultResponse represents the response after submitting an exam

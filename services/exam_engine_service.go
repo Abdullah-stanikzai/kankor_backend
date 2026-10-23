@@ -361,7 +361,7 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 
 	// Calculate correct answers by comparing with question table
 	rows2, err := tx.Query(context.Background(),
-		`SELECT q.id, q.text, q.correct_option, a.selected_option 
+		`SELECT q.id, q.text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, a.selected_option 
 		 FROM questions q 
 		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
 		 WHERE q.exam_id = $3
@@ -377,10 +377,10 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 	unansweredCount := 0
 
 	for rows2.Next() {
-		var qID, qText, correctOption string
+		var qID, qText, optionA, optionB, optionC, optionD, correctOption string
 		var selectedOption *string // Can be null if no answer
 
-		err := rows2.Scan(&qID, &qText, &correctOption, &selectedOption)
+		err := rows2.Scan(&qID, &qText, &optionA, &optionB, &optionC, &optionD, &correctOption, &selectedOption)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comparison: %w", err)
 		}
@@ -400,6 +400,7 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 		questionReview = append(questionReview, models.QuestionReview{
 			QuestionID:     qID,
 			Question:       qText,
+			Options:        map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD},
 			SelectedOption: selectedOption,
 			CorrectOption:  correctOption,
 			IsCorrect:      isCorrect,
@@ -461,7 +462,7 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 }
 
 // GetStudentResult fetches the result for a specific exam attempt
-func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.ExamResult, error) {
+func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.ExamResultResponse, error) {
 	var result models.ExamResult
 	query := `SELECT id, student_id, exam_id, score, total_questions, correct_answers, wrong_answers, unanswered_questions, time_spent_seconds, created_at 
 		FROM exam_results 
@@ -479,5 +480,45 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 		return nil, fmt.Errorf("result not found: %w", err)
 	}
 
-	return &result, nil
+	rows, err := config.DBConnection.Query(context.Background(),
+		`SELECT q.id, q.text, q.option_a, q.option_b, q.option_c, q.option_d,
+				q.correct_option, a.selected_option
+		 FROM questions q
+		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
+		 WHERE q.exam_id = $2
+		 ORDER BY q.created_at`, studentID, examID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch question review: %w", err)
+	}
+	defer rows.Close()
+
+	review := make([]models.QuestionReview, 0, result.TotalQuestions)
+	for rows.Next() {
+		var questionID, questionText, optionA, optionB, optionC, optionD, correctOption string
+		var selectedOption *string
+		if err := rows.Scan(&questionID, &questionText, &optionA, &optionB, &optionC, &optionD, &correctOption, &selectedOption); err != nil {
+			return nil, fmt.Errorf("failed to scan question review: %w", err)
+		}
+		isCorrect := selectedOption != nil && *selectedOption == correctOption
+		review = append(review, models.QuestionReview{
+			QuestionID:     questionID,
+			Question:       questionText,
+			Options:        map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD},
+			SelectedOption: selectedOption,
+			CorrectOption:  correctOption,
+			IsCorrect:      isCorrect,
+		})
+	}
+
+	return &models.ExamResultResponse{
+		Score:               result.Score,
+		CorrectAnswers:      result.CorrectAnswers,
+		TotalQuestions:      result.TotalQuestions,
+		WrongAnswers:        result.WrongAnswers,
+		UnansweredQuestions: result.UnansweredQuestions,
+		Percentage:          result.Score,
+		Passed:              result.Score >= 50,
+		TimeSpent:           result.TimeSpentSeconds,
+		QuestionsReview:     review,
+	}, nil
 }
