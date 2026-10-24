@@ -361,7 +361,7 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 
 	// Calculate correct answers by comparing with question table
 	rows2, err := tx.Query(context.Background(),
-		`SELECT q.id, q.text, q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, a.selected_option 
+		`SELECT q.id, COALESCE(NULLIF(q.question_text, ''), q.text), q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, a.selected_option 
 		 FROM questions q 
 		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
 		 WHERE q.exam_id = $3
@@ -397,10 +397,23 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 			unansweredCount++
 		}
 
+		options := map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD}
+		optionRows, optionErr := tx.Query(context.Background(),
+			`SELECT option_letter, option_text FROM question_options WHERE question_id = $1 ORDER BY option_order ASC`, qID)
+		if optionErr == nil {
+			for optionRows.Next() {
+				var letter, text string
+				if scanErr := optionRows.Scan(&letter, &text); scanErr == nil {
+					options[letter] = text
+				}
+			}
+			optionRows.Close()
+		}
+
 		questionReview = append(questionReview, models.QuestionReview{
 			QuestionID:     qID,
 			Question:       qText,
-			Options:        map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD},
+			Options:        options,
 			SelectedOption: selectedOption,
 			CorrectOption:  correctOption,
 			IsCorrect:      isCorrect,
