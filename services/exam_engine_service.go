@@ -481,7 +481,7 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 	}
 
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT q.id, q.text, q.option_a, q.option_b, q.option_c, q.option_d,
+		`SELECT q.id, COALESCE(NULLIF(q.question_text, ''), q.text), q.option_a, q.option_b, q.option_c, q.option_d,
 				q.correct_option, a.selected_option
 		 FROM questions q
 		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
@@ -500,15 +500,31 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 			return nil, fmt.Errorf("failed to scan question review: %w", err)
 		}
 		isCorrect := selectedOption != nil && *selectedOption == correctOption
+		options := map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD}
+		optionRows, optionErr := config.DBConnection.Query(context.Background(),
+			`SELECT option_letter, option_text FROM question_options WHERE question_id = $1 ORDER BY option_order ASC`, questionID)
+		if optionErr == nil {
+			for optionRows.Next() {
+				var letter, text string
+				if scanErr := optionRows.Scan(&letter, &text); scanErr == nil {
+					options[letter] = text
+				}
+			}
+			optionRows.Close()
+		}
 		review = append(review, models.QuestionReview{
 			QuestionID:     questionID,
 			Question:       questionText,
-			Options:        map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD},
+			Options:        options,
 			SelectedOption: selectedOption,
 			CorrectOption:  correctOption,
 			IsCorrect:      isCorrect,
 		})
 	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to read question review: %w", err)
+	}
+	fmt.Printf("[DB] Found %d review questions for student %s, exam %s\n", len(review), studentID, examID)
 
 	return &models.ExamResultResponse{
 		Score:               result.Score,
