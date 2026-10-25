@@ -107,7 +107,7 @@ curl http://localhost:5001/health
 # Expected: {"status":"healthy","service":"pdf-extractor",...}
 
 # Check database
-docker compose exec postgres psql -U kankor_user -d kankor_db -c "\dt"
+docker compose exec postgres psql -U infinity -d kankor_db -c "\dt"
 ```
 
 ---
@@ -204,30 +204,30 @@ docker compose logs -f
 
 ```bash
 # Via docker exec
-docker compose exec postgres psql -U kankor_user -d kankor_db
+docker compose exec postgres psql -U infinity -d kankor_db
 
 # From host (using mapped port 5433)
-psql -h localhost -p 5433 -U kankor_user -d kankor_db
+psql -h localhost -p 5433 -U infinity -d kankor_db
 ```
 
 ### 4.2 Backup & Restore
 
 ```bash
 # Create backup
-docker compose exec -T postgres pg_dump -U kankor_user -d kankor_db > backup_$(date +%Y%m%d_%H%M%S).sql
+docker compose exec -T postgres pg_dump -U infinity -d kankor_db > backup_$(date +%Y%m%d_%H%M%S).sql
 
 # Restore from backup
-docker compose exec -T postgres psql -U kankor_user -d kankor_db < backup_20250101_120000.sql
+docker compose exec -T postgres psql -U infinity -d kankor_db < backup_20250101_120000.sql
 
 # Automated daily backup (add to crontab)
-# 0 2 * * * cd /opt/kankor-backend && docker compose exec -T postgres pg_dump -U kankor_user -d kankor_db > /backups/kankor_$(date +\%Y\%m\%d).sql
+# 0 2 * * * cd /opt/kankor-backend && docker compose exec -T postgres pg_dump -U infinity -d kankor_db > /backups/kankor_$(date +\%Y\%m\%d).sql
 ```
 
 ### 4.3 Database Migrations
 
 ```bash
 # Run a migration script
-docker compose exec -T postgres psql -U kankor_user -d kankor_db < migrations/xxx.sql
+docker compose exec -T postgres psql -U infinity -d kankor_db < migrations/xxx.sql
 
 # Reset database (⚠ DESTROYS ALL DATA)
 docker compose down -v
@@ -283,7 +283,7 @@ sudo lsof -i :5001
 # Full health check
 echo "=== Backend ===" && curl -s http://localhost:8081/health | python3 -m json.tool
 echo "=== PDF Extractor ===" && curl -s http://localhost:5001/health | python3 -m json.tool
-echo "=== PG Status ===" && docker compose exec postgres pg_isready -U kankor_user -d kankor_db
+echo "=== PG Status ===" && docker compose exec postgres pg_isready -U infinity -d kankor_db
 
 # Check container resource usage
 docker stats --no-stream
@@ -389,13 +389,13 @@ docker compose build --no-cache   # Clean rebuild
 docker compose up -d --build backend  # Rebuild only backend
 
 # ─── Database ───────────────────────────
-docker compose exec postgres psql -U kankor_user -d kankor_db   # SQL shell
-docker compose exec -T postgres pg_dump -U kankor_user -d kankor_db > backup.sql  # Backup
+docker compose exec postgres psql -U infinity -d kankor_db   # SQL shell
+docker compose exec -T postgres pg_dump -U infinity -d kankor_db > backup.sql  # Backup
 
 # ─── Health ─────────────────────────────
 curl http://localhost:8081/health        # Backend health
 curl http://localhost:5001/health        # PDF extractor health
-docker compose exec postgres pg_isready -U kankor_user -d kankor_db  # DB health
+docker compose exec postgres pg_isready -U infinity -d kankor_db  # DB health
 ```
 
 ---
@@ -405,7 +405,7 @@ docker compose exec postgres pg_isready -U kankor_user -d kankor_db  # DB health
 | Variable           | Required | Default          | Description                         |
 |--------------------|----------|------------------|-------------------------------------|
 | `DB_NAME`          | No       | `kankor_db`      | PostgreSQL database name            |
-| `DB_USER`          | No       | `kankor_user`    | PostgreSQL user                     |
+| `DB_USER`          | No       | `infinity`       | PostgreSQL user (actual role on this server; must match the `.env`) |
 | `DB_PASSWORD`      | **Yes**  | —                | PostgreSQL password                 |
 | `KANKOR_DB_PORT`   | No       | `5433`           | Host port for PostgreSQL            |
 | `KANKOR_API_PORT`  | No       | `8081`           | Host port for backend API           |

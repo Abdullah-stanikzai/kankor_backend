@@ -16,7 +16,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${DB_NAME:-kankor_db}
-      POSTGRES_USER: ${DB_USER:-kankor_user}
+      POSTGRES_USER: ${DB_USER:-infinity}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     ports:
       - "${KANKOR_DB_PORT:-5433}:5432"
@@ -26,7 +26,7 @@ services:
     networks:
       - kankor-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-kankor_user} -d ${DB_NAME:-kankor_db}"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-infinity} -d ${DB_NAME:-kankor_db}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -62,7 +62,7 @@ services:
     environment:
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: ${DB_USER:-kankor_user}
+      DB_USER: ${DB_USER:-infinity}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_NAME: ${DB_NAME:-kankor_db}
       JWT_SECRET: ${JWT_SECRET}
