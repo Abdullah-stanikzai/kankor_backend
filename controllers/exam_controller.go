@@ -375,7 +375,7 @@ func (ec *ExamController) GetExamQuestionsAdmin(c *fiber.Ctx) error {
 
 	// Fetch questions using NEW schema (with option_a, option_b, etc.)
 	rows, err := config.DBConnection.Query(context.Background(),
-		`SELECT id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, created_at, updated_at 
+		`SELECT id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at
 		 FROM questions WHERE exam_id = $1 ORDER BY created_at ASC`,
 		examID)
 	if err != nil {
@@ -389,6 +389,7 @@ func (ec *ExamController) GetExamQuestionsAdmin(c *fiber.Ctx) error {
 		Text          string            `json:"text"`
 		Options       map[string]string `json:"options"`        // {"A": "Option A", "B": "Option B", ...}
 		CorrectOption string            `json:"correct_option"` // "A", "B", "C", or "D"
+		Score         float64           `json:"score"`
 		CreatedAt     time.Time         `json:"created_at"`
 	}
 
@@ -397,7 +398,7 @@ func (ec *ExamController) GetExamQuestionsAdmin(c *fiber.Ctx) error {
 		var q models.QuestionWithFlatOptions
 		err := rows.Scan(
 			&q.ID, &q.ExamID, &q.Text, &q.OptionA, &q.OptionB, &q.OptionC, &q.OptionD,
-			&q.CorrectOption, &q.CreatedAt, &q.UpdatedAt,
+			&q.CorrectOption, &q.Score, &q.CreatedAt, &q.UpdatedAt,
 		)
 		if err != nil {
 			return c.Status(http.StatusInternalServerError).JSON(config.ErrorResponse(fmt.Sprintf("Failed to scan question: %v", err), http.StatusInternalServerError))
@@ -414,6 +415,7 @@ func (ec *ExamController) GetExamQuestionsAdmin(c *fiber.Ctx) error {
 				"D": q.OptionD,
 			},
 			CorrectOption: q.CorrectOption,
+			Score:         q.Score,
 			CreatedAt:     q.CreatedAt,
 		})
 	}
@@ -433,6 +435,7 @@ func (ec *ExamController) CreateQuestion(c *fiber.Ctx) error {
 		Text          string            `json:"text" validate:"required"`
 		Options       map[string]string `json:"options" validate:"required"` // {"A": "Option A", "B": "Option B", ...}
 		CorrectOption string            `json:"correct_option" validate:"required,oneof=A B C D"`
+		Score         *float64          `json:"score"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -448,21 +451,28 @@ func (ec *ExamController) CreateQuestion(c *fiber.Ctx) error {
 			return c.Status(http.StatusBadRequest).JSON(config.ErrorResponse(fmt.Sprintf("Missing option %s", key), http.StatusBadRequest))
 		}
 	}
+	questionScore := 1.0
+	if req.Score != nil {
+		questionScore = *req.Score
+		if questionScore < 0 {
+			return c.Status(http.StatusBadRequest).JSON(config.ErrorResponse("Score cannot be negative", http.StatusBadRequest))
+		}
+	}
 
 	// Insert question with NEW schema
 	var question models.QuestionWithFlatOptions
-	query := `INSERT INTO questions (exam_id, text, option_a, option_b, option_c, option_d, correct_option, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW(), NOW())
-		RETURNING id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, created_at, updated_at`
+	query := `INSERT INTO questions (exam_id, text, option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW(), NOW())
+		RETURNING id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at`
 
 	fmt.Printf("[CreateQuestion] Executing SQL query with examID: %s\n", examID)
-	fmt.Printf("[CreateQuestion] Text: %s, Options: A=%s, B=%s, C=%s, D=%s, Correct: %s\n",
-		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption)
+	fmt.Printf("[CreateQuestion] Text: %s, Options: A=%s, B=%s, C=%s, D=%s, Correct: %s, Score: %.2f\n",
+		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption, questionScore)
 
 	err := config.DBConnection.QueryRow(context.Background(), query,
-		examID, req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption).Scan(
+		examID, req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption, questionScore).Scan(
 		&question.ID, &question.ExamID, &question.Text, &question.OptionA, &question.OptionB, &question.OptionC, &question.OptionD,
-		&question.CorrectOption, &question.CreatedAt, &question.UpdatedAt,
+		&question.CorrectOption, &question.Score, &question.CreatedAt, &question.UpdatedAt,
 	)
 
 	if err != nil {
@@ -478,6 +488,7 @@ func (ec *ExamController) CreateQuestion(c *fiber.Ctx) error {
 		ExamID    string            `json:"exam_id"`
 		Text      string            `json:"text"`
 		Options   map[string]string `json:"options"`
+		Score     float64           `json:"score"`
 		CreatedAt time.Time         `json:"created_at"`
 	}
 
@@ -486,6 +497,7 @@ func (ec *ExamController) CreateQuestion(c *fiber.Ctx) error {
 		ExamID:    question.ExamID,
 		Text:      question.Text,
 		Options:   req.Options,
+		Score:     question.Score,
 		CreatedAt: question.CreatedAt,
 	}
 
@@ -525,6 +537,7 @@ func (ec *ExamController) UpdateQuestionAdmin(c *fiber.Ctx) error {
 		Text          string            `json:"text" validate:"required"`
 		Options       map[string]string `json:"options" validate:"required"` // {"A": "Option A", "B": "Option B", ...}
 		CorrectOption string            `json:"correct_option" validate:"required,oneof=A B C D"`
+		Score         *float64          `json:"score"`
 	}
 
 	if err := c.BodyParser(&req); err != nil {
@@ -540,22 +553,29 @@ func (ec *ExamController) UpdateQuestionAdmin(c *fiber.Ctx) error {
 			return c.Status(http.StatusBadRequest).JSON(config.ErrorResponse(fmt.Sprintf("Missing option %s", key), http.StatusBadRequest))
 		}
 	}
+	questionScore := 1.0
+	if req.Score != nil {
+		questionScore = *req.Score
+		if questionScore < 0 {
+			return c.Status(http.StatusBadRequest).JSON(config.ErrorResponse("Score cannot be negative", http.StatusBadRequest))
+		}
+	}
 
 	// Update the question in database
 	var question models.QuestionWithFlatOptions
 	query := `UPDATE questions 
-		SET text = $1, option_a = $2, option_b = $3, option_c = $4, option_d = $5, correct_option = $6, updated_at = NOW()
-		WHERE id = $7 AND exam_id = $8
-		RETURNING id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, created_at, updated_at`
+		SET text = $1, option_a = $2, option_b = $3, option_c = $4, option_d = $5, correct_option = $6, score = $7, updated_at = NOW()
+		WHERE id = $8 AND exam_id = $9
+		RETURNING id, exam_id, text, option_a, option_b, option_c, option_d, correct_option, score, created_at, updated_at`
 
 	fmt.Printf("[UpdateQuestionAdmin] Executing SQL query with questionID: %s\n", questionID)
-	fmt.Printf("[UpdateQuestionAdmin] Text: %s, Options: A=%s, B=%s, C=%s, D=%s, Correct: %s\n",
-		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption)
+	fmt.Printf("[UpdateQuestionAdmin] Text: %s, Options: A=%s, B=%s, C=%s, D=%s, Correct: %s, Score: %.2f\n",
+		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption, questionScore)
 
 	err := config.DBConnection.QueryRow(context.Background(), query,
-		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption, questionID, examID).Scan(
+		req.Text, req.Options["A"], req.Options["B"], req.Options["C"], req.Options["D"], req.CorrectOption, questionScore, questionID, examID).Scan(
 		&question.ID, &question.ExamID, &question.Text, &question.OptionA, &question.OptionB, &question.OptionC, &question.OptionD,
-		&question.CorrectOption, &question.CreatedAt, &question.UpdatedAt,
+		&question.CorrectOption, &question.Score, &question.CreatedAt, &question.UpdatedAt,
 	)
 
 	if err != nil {
@@ -571,6 +591,7 @@ func (ec *ExamController) UpdateQuestionAdmin(c *fiber.Ctx) error {
 		ExamID    string            `json:"exam_id"`
 		Text      string            `json:"text"`
 		Options   map[string]string `json:"options"`
+		Score     float64           `json:"score"`
 		CreatedAt time.Time         `json:"created_at"`
 		UpdatedAt time.Time         `json:"updated_at"`
 	}
@@ -580,6 +601,7 @@ func (ec *ExamController) UpdateQuestionAdmin(c *fiber.Ctx) error {
 		ExamID:    question.ExamID,
 		Text:      question.Text,
 		Options:   req.Options,
+		Score:     question.Score,
 		CreatedAt: question.CreatedAt,
 		UpdatedAt: question.UpdatedAt,
 	}
