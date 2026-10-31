@@ -138,7 +138,7 @@ func (s *ExamEngineService) GetQuestionsForExam(examID, studentID string) ([]*mo
 }
 
 // GetAllStudentResults fetches all exam results for a student
-func (s *ExamEngineService) GetAllStudentResults(studentID, centerID string) ([]map[string]interface{}, error) {
+func (s *ExamEngineService) GetAllStudentResults(studentID string) ([]map[string]interface{}, error) {
 	fmt.Printf("[DB] Fetching all exam results for student %s\n", studentID)
 
 	// Query exam_results joined with exams to get exam titles
@@ -157,9 +157,9 @@ func (s *ExamEngineService) GetAllStudentResults(studentID, centerID string) ([]
 			e.duration_minutes
 		 FROM exam_results er
 		 INNER JOIN exams e ON er.exam_id = e.id
-		 WHERE er.student_id = $1 AND e.center_id = $2
+		 WHERE er.student_id = $1
 		 ORDER BY er.created_at DESC`,
-		studentID, centerID)
+		studentID)
 
 	if err != nil {
 		fmt.Printf("[DB] Query failed: %v\n", err)
@@ -310,17 +310,11 @@ func (s *ExamEngineService) updateAnswer(answerID, selectedOption string) (*mode
 }
 
 // SubmitExam submits the exam and calculates the result
-func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeSpentSeconds int) (*models.ExamResultResponse, error) {
-	// Verify the exam belongs to the student's center before accepting a submission.
-	var examCenterID string
-	err := config.DBConnection.QueryRow(context.Background(),
-		`SELECT center_id FROM exams WHERE id = $1`, examID).Scan(&examCenterID)
-	if err != nil {
-		return nil, fmt.Errorf("exam not found: %w", err)
-	}
-	if examCenterID != centerID {
-		fmt.Printf("[ExamEngine] SubmitExam blocked: exam center=%s != student center=%s\n", examCenterID, centerID)
-		return nil, fmt.Errorf("student does not have access to this exam")
+func (s *ExamEngineService) SubmitExam(studentID, examID string, timeSpentSeconds int) (*models.ExamResultResponse, error) {
+	// Read the student's active center assignment from the database rather than
+	// from the JWT. This makes newly registered students work immediately.
+	if err := s.verifyStudentExamAccess(examID, studentID); err != nil {
+		return nil, err
 	}
 
 	// Start a transaction

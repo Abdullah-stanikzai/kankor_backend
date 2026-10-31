@@ -1,7 +1,6 @@
 package controllers
 
 import (
-	"errors"
 	"fmt"
 	"kankor-backend/middleware"
 	"kankor-backend/models"
@@ -195,13 +194,15 @@ func (ctrl *ExamEngineController) SubmitExam(c *fiber.Ctx) error {
 	fmt.Printf("[ExamEngine] Submitting exam - Student: %s, Exam: %s, Time Spent: %ds\n",
 		claims.UserID, examID, req.TimeSpent)
 
-	result, err := ctrl.engineService.SubmitExam(claims.UserID, examID, claims.CenterID, req.TimeSpent)
+	result, err := ctrl.engineService.SubmitExam(claims.UserID, examID, req.TimeSpent)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error submitting exam: %v\n", err)
 
-		// Check if it's a validation error
-		if errors.Is(err, fmt.Errorf("exam has no questions")) {
+		switch err.Error() {
+		case "exam has no questions":
 			return fiber.NewError(fiber.StatusBadRequest, "Cannot submit exam with no questions")
+		case "student does not have access to this exam":
+			return fiber.NewError(fiber.StatusForbidden, "You don't have access to this exam")
 		}
 
 		return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("Failed to submit exam: %v", err))
@@ -267,7 +268,7 @@ func (ctrl *ExamEngineController) GetAllResults(c *fiber.Ctx) error {
 
 	fmt.Printf("[ExamEngine] Fetching all results for student %s, center %s\n", claims.UserID, claims.CenterID)
 
-	results, err := ctrl.engineService.GetAllStudentResults(claims.UserID, claims.CenterID)
+	results, err := ctrl.engineService.GetAllStudentResults(claims.UserID)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error fetching results: %v\n", err)
 		return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("Failed to fetch results: %v", err))
