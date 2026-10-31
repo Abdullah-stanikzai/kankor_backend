@@ -59,7 +59,7 @@ func (ctrl *ExamEngineController) GetQuestionsForExam(c *fiber.Ctx) error {
 	fmt.Printf("[ExamEngine] Fetching questions for exam %s by student %s (center: %s)\n",
 		examID, claims.UserID, claims.CenterID)
 
-	questions, err := ctrl.engineService.GetQuestionsForExam(examID, claims.UserID, claims.CenterID)
+	questions, err := ctrl.engineService.GetQuestionsForExam(examID, claims.UserID)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error fetching questions: %v\n", err)
 
@@ -153,7 +153,7 @@ func (ctrl *ExamEngineController) SaveAnswer(c *fiber.Ctx) error {
 	fmt.Printf("[ExamEngine] Saving answer - Student: %s, Exam: %s, Question: %s, Option: %s\n",
 		claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption)
 
-	answer, err := ctrl.engineService.SaveAnswer(claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption, claims.CenterID)
+	answer, err := ctrl.engineService.SaveAnswer(claims.UserID, req.ExamID, req.QuestionID, req.SelectedOption)
 	if err != nil {
 		fmt.Printf("[ExamEngine] Error saving answer: %v\n", err)
 		return fiber.NewError(fiber.StatusInternalServerError, fmt.Sprintf("Failed to save answer: %v", err))

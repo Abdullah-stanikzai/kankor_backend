@@ -298,6 +298,8 @@ type QuestionReview struct {
 // ExamResultResponse represents the response after submitting an exam
 type ExamResultResponse struct {
 	Score               float64          `json:"score"`
+	EarnedScore         float64          `json:"earned_score"`
+	TotalScore          float64          `json:"total_score"`
 	CorrectAnswers      int              `json:"correct_answers"`
 	TotalQuestions      int              `json:"total_questions"`
 	WrongAnswers        int              `json:"wrong_answers"`

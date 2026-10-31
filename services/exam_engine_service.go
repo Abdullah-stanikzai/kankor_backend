@@ -18,28 +18,42 @@ func NewExamEngineService(cfg *config.Config) *ExamEngineService {
 	return &ExamEngineService{cfg: cfg}
 }
 
-// GetQuestionsForExam fetches all questions for a specific exam
-func (s *ExamEngineService) GetQuestionsForExam(examID, studentID, centerID string) ([]*models.QuestionWithOptions, error) {
-	// Verify student has access to this exam through their center
+func (s *ExamEngineService) verifyStudentExamAccess(examID, studentID string) error {
 	var examCenterID string
 	err := config.DBConnection.QueryRow(context.Background(),
 		`SELECT center_id FROM exams WHERE id = $1`, examID).Scan(&examCenterID)
 	if err != nil {
 		fmt.Printf("[DB] Exam %s not found: %v\n", examID, err)
-		return nil, fmt.Errorf("exam not found or inaccessible: %w", err)
+		return fmt.Errorf("exam not found or inaccessible: %w", err)
 	}
 
-	fmt.Printf("[DB] Exam %s belongs to center %s\n", examID, examCenterID)
+	var hasAccess bool
+	err = config.DBConnection.QueryRow(context.Background(),
+		`SELECT EXISTS (
+			SELECT 1 FROM users
+			WHERE id = $1 AND role = 'student' AND center_id = $2
+			  AND status = 'active' AND is_active = true
+		)`, studentID, examCenterID).Scan(&hasAccess)
+	if err != nil {
+		return fmt.Errorf("failed to verify student exam access: %w", err)
+	}
+	if !hasAccess {
+		return fmt.Errorf("student does not have access to this exam")
+	}
 
-	// Verify the exam belongs to student's center
-	if examCenterID != centerID {
-		fmt.Printf("[DB] Center mismatch: exam center=%s, student center=%s\n", examCenterID, centerID)
-		return nil, fmt.Errorf("student does not have access to this exam")
+	fmt.Printf("[DB] Student %s has access to exam %s at center %s\n", studentID, examID, examCenterID)
+	return nil
+}
+
+// GetQuestionsForExam fetches all questions for a specific exam
+func (s *ExamEngineService) GetQuestionsForExam(examID, studentID string) ([]*models.QuestionWithOptions, error) {
+	if err := s.verifyStudentExamAccess(examID, studentID); err != nil {
+		return nil, err
 	}
 
 	// Block access once the exam has passed its finishing time (server time).
 	var endTime time.Time
-	err = config.DBConnection.QueryRow(context.Background(),
+	err := config.DBConnection.QueryRow(context.Background(),
 		`SELECT end_time FROM exams WHERE id = $1`, examID).Scan(&endTime)
 	if err == nil && time.Now().After(endTime) {
 		fmt.Printf("[DB] Exam %s has ended (end=%v), blocking questions\n", examID, endTime)
@@ -201,21 +215,14 @@ func (s *ExamEngineService) GetAllStudentResults(studentID, centerID string) ([]
 }
 
 // SaveAnswer saves or updates a student's answer (upsert operation)
-func (s *ExamEngineService) SaveAnswer(studentID, examID, questionID, selectedOption, centerID string) (*models.StudentAnswerSimple, error) {
-	// Verify the exam belongs to the student's center.
-	var examCenterID string
-	err := config.DBConnection.QueryRow(context.Background(),
-		`SELECT center_id FROM exams WHERE id = $1`, examID).Scan(&examCenterID)
-	if err != nil {
-		return nil, fmt.Errorf("exam not found or inaccessible: %w", err)
-	}
-	if examCenterID != centerID {
-		return nil, fmt.Errorf("student does not have access to this exam")
+func (s *ExamEngineService) SaveAnswer(studentID, examID, questionID, selectedOption string) (*models.StudentAnswerSimple, error) {
+	if err := s.verifyStudentExamAccess(examID, studentID); err != nil {
+		return nil, err
 	}
 
 	// Check if answer already exists
 	var existingAnswer models.StudentAnswerSimple
-	err = config.DBConnection.QueryRow(context.Background(),
+	err := config.DBConnection.QueryRow(context.Background(),
 		`SELECT id, student_id, exam_id, question_id, selected_option, is_correct, created_at, updated_at 
 		 FROM answers 
 		 WHERE student_id = $1 AND question_id = $2`,
@@ -361,7 +368,7 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 
 	// Calculate correct answers by comparing with question table
 	rows2, err := tx.Query(context.Background(),
-		`SELECT q.id, COALESCE(NULLIF(q.question_text, ''), q.text), q.option_a, q.option_b, q.option_c, q.option_d, q.correct_option, a.selected_option 
+		`SELECT q.id, COALESCE(NULLIF(q.question_text, ''), q.text), q.option_a, q.option_b, q.option_c, q.option_d, COALESCE(q.score, 1), q.correct_option, a.selected_option
 		 FROM questions q 
 		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
 		 WHERE q.exam_id = $3
@@ -375,21 +382,26 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 	correctCount = 0
 	wrongCount := 0
 	unansweredCount := 0
+	totalScore := 0.0
+	earnedScore := 0.0
 
 	for rows2.Next() {
 		var qID, qText, optionA, optionB, optionC, optionD, correctOption string
+		var questionScore float64
 		var selectedOption *string // Can be null if no answer
 
-		err := rows2.Scan(&qID, &qText, &optionA, &optionB, &optionC, &optionD, &correctOption, &selectedOption)
+		err := rows2.Scan(&qID, &qText, &optionA, &optionB, &optionC, &optionD, &questionScore, &correctOption, &selectedOption)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan comparison: %w", err)
 		}
+		totalScore += questionScore
 
 		isCorrect := selectedOption != nil && *selectedOption == correctOption
 
 		if selectedOption != nil {
 			if isCorrect {
 				correctCount++
+				earnedScore += questionScore
 			} else {
 				wrongCount++
 			}
@@ -420,8 +432,15 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 		})
 	}
 
-	// Calculate metrics
-	score := float64(correctCount) / float64(totalQuestions) * 100.0
+	// Calculate the percentage from the configured question points. This keeps
+	// the displayed achieved/total score consistent when questions have
+	// different point values.
+	score := 0.0
+	if totalScore > 0 {
+		score = earnedScore / totalScore * 100.0
+	} else if totalQuestions > 0 {
+		score = float64(correctCount) / float64(totalQuestions) * 100.0
+	}
 
 	// Save exam result (upsert) using the transaction
 	var result models.ExamResult
@@ -458,6 +477,8 @@ func (s *ExamEngineService) SubmitExam(studentID, examID, centerID string, timeS
 	// Build response with question review
 	response := &models.ExamResultResponse{
 		Score:               result.Score,
+		EarnedScore:         earnedScore,
+		TotalScore:          totalScore,
 		CorrectAnswers:      result.CorrectAnswers,
 		TotalQuestions:      result.TotalQuestions,
 		WrongAnswers:        result.WrongAnswers,
@@ -495,7 +516,7 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 
 	rows, err := config.DBConnection.Query(context.Background(),
 		`SELECT q.id, COALESCE(NULLIF(q.question_text, ''), q.text), q.option_a, q.option_b, q.option_c, q.option_d,
-				q.correct_option, a.selected_option
+				COALESCE(q.score, 1), q.correct_option, a.selected_option
 		 FROM questions q
 		 LEFT JOIN answers a ON q.id = a.question_id AND a.student_id = $1 AND a.exam_id = $2
 		 WHERE q.exam_id = $2
@@ -506,13 +527,20 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 	defer rows.Close()
 
 	review := make([]models.QuestionReview, 0, result.TotalQuestions)
+	totalScore := 0.0
+	earnedScore := 0.0
 	for rows.Next() {
 		var questionID, questionText, optionA, optionB, optionC, optionD, correctOption string
+		var questionScore float64
 		var selectedOption *string
-		if err := rows.Scan(&questionID, &questionText, &optionA, &optionB, &optionC, &optionD, &correctOption, &selectedOption); err != nil {
+		if err := rows.Scan(&questionID, &questionText, &optionA, &optionB, &optionC, &optionD, &questionScore, &correctOption, &selectedOption); err != nil {
 			return nil, fmt.Errorf("failed to scan question review: %w", err)
 		}
 		isCorrect := selectedOption != nil && *selectedOption == correctOption
+		totalScore += questionScore
+		if isCorrect {
+			earnedScore += questionScore
+		}
 		options := map[string]string{"A": optionA, "B": optionB, "C": optionC, "D": optionD}
 		optionRows, optionErr := config.DBConnection.Query(context.Background(),
 			`SELECT option_letter, option_text FROM question_options WHERE question_id = $1 ORDER BY option_order ASC`, questionID)
@@ -541,6 +569,8 @@ func (s *ExamEngineService) GetStudentResult(studentID, examID string) (*models.
 
 	return &models.ExamResultResponse{
 		Score:               result.Score,
+		EarnedScore:         earnedScore,
+		TotalScore:          totalScore,
 		CorrectAnswers:      result.CorrectAnswers,
 		TotalQuestions:      result.TotalQuestions,
 		WrongAnswers:        result.WrongAnswers,
